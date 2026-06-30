@@ -1,13 +1,14 @@
 import streamlit as st
+import pandas as pd
 import json
 import re
 
 st.set_page_config(page_title="OTA 週報數據更新器", layout="centered")
 
-st.title("📊 OTA 週報網頁數據更新器")
-st.write("請在下方上傳每週最新的資料，系統會自動將數據注入你的網頁，並提供下載。")
+st.title("📊 OTA 週報網頁數據更新器 (CSV 自動計算版)")
+st.write("請在下方上傳每週拉出來的數據 CSV 檔，系統會自動完成所有複雜的數據加總與 WoW 計算，並注入你的網頁模板中。")
 
-# 這裡我幫你把精美的 HTML 完整包成 Python 字串變數，這樣就不會再報錯了
+# 這裡是你精美的 HTML 原始碼模板
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
@@ -209,7 +210,7 @@ function n(v,t){
   return v;
 }
 function w(v){
-  if(v===null||v===undefined)return'<span class="wow-nt">—</span>';
+  if(v===null||v===undefined||isNaN(v)||!isFinite(v))return'<span class="wow-nt">—</span>';
   const p=(v*100).toFixed(1),cls=v>=0?\'wow-up\':\'wow-dn\',s=v>=0?\'+\':\'\';
   return`<span class="${cls}">${s}${p}%</span>`;
 }
@@ -235,7 +236,7 @@ const tW1rn=D.mm_overview.reduce((s,m)=>s+m.w1_rn,0);
 const tW2rn=D.mm_overview.reduce((s,m)=>s+m.w2_rn,0);
 const tW1rev=D.mm_overview.reduce((s,m)=>s+m.w1_rev,0);
 const tW2rev=D.mm_overview.reduce((s,m)=>s+m.w2_rev,0);
-const wRn=(tW2rn-tW1rn)/tW1rn,wRev=(tW2rev-tW1rev)/tW1rev;
+const wRn=tW1rn?(tW2rn-tW1rn)/tW1rn:0,wRev=tW1rev?(tW2rev-tW1rev)/tW1rev:0;
 document.getElementById(\'mm-summary\').innerHTML=[
   {l:D.week1_label+\' RN\',v:tW1rn.toLocaleString(),w:null},
   {l:D.week2_label+\' RN\',v:tW2rn.toLocaleString(),w:wRn},
@@ -259,12 +260,12 @@ D.mm_overview.forEach(m=>{
     <td>${w(m.wow_rn)}</td><td>${w(m.wow_rev)}</td><td>${w(m.wow_adr)}</td>
   </tr>`;
 });
-const tAdr1=tW1rev/tW1rn,tAdr2=tW2rev/tW2rn;
+const tAdr1=tW1rn?tW1rev/tW1rn:0,tAdr2=tW2rn?tW2rev/tW2rn:0;
 mmH+=`<tr class="row-total">
   <td>Others 總計</td>
   <td>${n(tW1rn,\'rn\')}</td><td>${n(tW1rev,\'rev\')}</td><td>${n(tAdr1,\'adr\')}</td>
   <td>${n(tW2rn,\'rn\')}</td><td>${n(tW2rev,\'rev\')}</td><td>${n(tAdr2,\'adr\')}</td>
-  <td>${w(wRn)}</td><td>${w(wRev)}</td><td>${w((tAdr2-tAdr1)/tAdr1)}</td>
+  <td>${w(wRn)}</td><td>${w(wRev)}</td><td>${w(tAdr1?(tAdr2-tAdr1)/tAdr1:0)}</td>
 </tr>`;
 document.getElementById(\'mm-tbody\').innerHTML=mmH;
 
@@ -290,8 +291,9 @@ document.getElementById(\'city-tbody\').innerHTML=cH;
 
 // Site by city
 const cities=Object.keys(D.city_site_overview);
-let selCity=cities[0];
+let selCity=cities[0] || '';
 function renderSite(city){
+  if(!city) return;
   const data=D.city_site_overview[city];
   const rows=data.sites.filter(s=>s.w1_rn>0||s.w2_rn>0).sort((a,b)=>b.w2_rn-a.w2_rn);
   let h=\'\';
@@ -303,27 +305,29 @@ function renderSite(city){
       <td>${w(s.wow_rn)}</td><td>${w(s.wow_rev)}</td><td>${w(s.wow_adr)}</td>
     </tr>`;
   });
-  const wowTotal=(data.total_w2_rn-data.total_w1_rn)/data.total_w1_rn;
+  const wowTotal=data.total_w1_rn?(data.total_w2_rn-data.total_w1_rn)/data.total_w1_rn:0;
   h+=`<tr class="row-total">
     <td>Total</td>
     <td>${n(data.total_w1_rn,\'rn\')}</td><td>—</td><td>—</td>
-    <td>${n(data.total_w2_rn,\'rn\')}</td><td>—</td><td>—</td>
+    <td>${data.total_w2_rn.toLocaleString()}</td><td>—</td><td>—</td>
     <td>${w(wowTotal)}</td><td>—</td><td>—</td>
   </tr>`;
   document.getElementById(\'site-tbody\').innerHTML=h;
   document.querySelectorAll(\'.city-tab\').forEach(t=>t.classList.toggle(\'active\',t.dataset.city===city));
 }
-document.getElementById(\'site-city-tabs\').innerHTML=cities.map(c=>
-  `<div class="city-tab${c===selCity?\' active\':\'\'}" data-city="${c}" onclick="selCity=\'${c}\';renderSite(\'${c}\')">${c}</div>`
-).join(\'\');
-renderSite(selCity);
+if(cities.length > 0) {
+  document.getElementById(\'site-city-tabs\').innerHTML=cities.map(c=>
+    `<div class="city-tab${c===selCity?\' active\':\'\'}" data-city="${c}" onclick="selCity=\'${c}\';renderSite(\'${c}\')">${c}</div>`
+  ).join(\'\');
+  renderSite(selCity);
+}
 
 // EZ Share
 let eH=\'\';
 D.ez_share.forEach(e=>{
   const fname=e.mm.split(\' \')[0];
   const wSign=e.wow_total>=0?\'+\':\'\';
-  const wCls=e.wow_total>=0?\'wow-up\':\'wow-dn';
+  const wCls=e.wow_total>=0?\'wow-up\':\'wow-dn\';
   eH+=`<div class="ez-card">
     <div class="ez-card-title">${fname}</div>
     <div class="ez-card-total">${e.total_w1.toLocaleString()} → ${e.total_w2.toLocaleString()} RN &nbsp;<span class="${wCls}">${wSign}${e.wow_total}</span></div>`;
@@ -355,6 +359,17 @@ document.getElementById('ez-grid').innerHTML=eH;
 </body>
 </html>"""
 
+# 預算安全除法
+def safe_wow(w2, w1):
+    if w1 == 0 or pd.isna(w1):
+        return 0.0
+    return float((w2 - w1) / w1)
+
+def safe_adr(rev, rn):
+    if rn == 0 or pd.isna(rn):
+        return 0.0
+    return float(rev / rn)
+
 st.subheader("1. 填寫本週日期標籤")
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -364,36 +379,169 @@ with col2:
 with col3:
     w2_label = st.text_input("本週區間 (week2_label)", value="6/19-6/25")
 
-st.subheader("2. 上傳最新數據原始檔")
-st.caption("💡 提示：請直接把包含 D = {...} 的文字存成文字檔上傳，或直接上傳純文字/JSON 內容。")
-uploaded_file = st.file_uploader("選擇你的資料檔案", type=["json", "txt", "html"])
+st.subheader("2. 上傳內部數據 CSV 原始檔")
+uploaded_file = st.file_uploader("請上傳 OverseaDataMarket 原始 CSV 檔案", type=["csv"])
 
 if uploaded_file is not None:
     try:
-        raw_content = uploaded_file.read().decode("utf-8")
+        # 讀取 CSV
+        df = pd.read_csv(uploaded_file)
         
-        # 精準撈取 JSON 結構的邏輯
-        json_match = re.search(r'(?:const\s+D\s*=\s*|^\s*)(\{.*?\})(?:\s*;?\s*$)', raw_content, re.DOTALL)
-        if json_match:
-            json_str = json_match.group(1)
-        else:
-            # 如果是直接丟整份舊的 html 進來，也幫忙撈出 const D
-            html_match = re.search(r'const\s+D\s*=\s*(\{.*?\});', raw_content, re.DOTALL)
-            if html_match:
-                json_str = html_match.group(1)
-            else:
-                json_str = raw_content
+        # 欄位型態處理
+        num_cols = ['W1 RN', 'W1 Revenue', 'W1 ADR', 'W2 RN', 'W2 Revenue', 'W2 ADR']
+        for col in num_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+
+        # ----------------------------------------------------
+        # 計算 1: MM 概況
+        # ----------------------------------------------------
+        mm_gb = df.groupby('MM Name').agg({
+            'W1 RN':'sum', 'W1 Revenue':'sum',
+            'W2 RN':'sum', 'W2 Revenue':'sum'
+        }).reset_index()
+        
+        mm_overview = []
+        for _, row in mm_gb.iterrows():
+            w1_rn, w1_rev = row['W1 RN'], row['W1 Revenue']
+            w2_rn, w2_rev = row['W2 RN'], row['W2 Revenue']
+            w1_adr = safe_adr(w1_rev, w1_rn)
+            w2_adr = safe_adr(w2_rev, w2_rn)
             
-        parsed_data = json.loads(json_str)
+            mm_overview.append({
+                "name": str(row['MM Name']),
+                "w1_rn": int(w1_rn), "w1_rev": float(w1_rev), "w1_adr": float(w1_adr),
+                "w2_rn": int(w2_rn), "w2_rev": float(w2_rev), "w2_adr": float(w2_adr),
+                "wow_rn": safe_wow(w2_rn, w1_rn),
+                "wow_rev": safe_wow(w2_rev, w1_rev),
+                "wow_adr": safe_wow(w2_adr, w1_adr)
+            })
+            
+        # ----------------------------------------------------
+        # 計算 2: 城市 & 星級
+        # ----------------------------------------------------
+        city_star_overview = []
+        cities = df['City'].dropna().unique()
+        for city in cities:
+            cdf = df[df['City'] == city]
+            c_w1_rn, c_w1_rev = cdf['W1 RN'].sum(), cdf['W1 Revenue'].sum()
+            c_w2_rn, c_w2_rev = cdf['W2 RN'].sum(), cdf['W2 Revenue'].sum()
+            c_w1_adr = safe_adr(c_w1_rev, c_w1_rn)
+            c_w2_adr = safe_adr(c_w2_rev, c_w2_rn)
+            
+            stars_data = []
+            stars = sorted(cdf['Star'].dropna().unique())
+            for star in stars:
+                sdf = cdf[cdf['Star'] == star]
+                s_w1_rn, s_w1_rev = sdf['W1 RN'].sum(), sdf['W1 Revenue'].sum()
+                s_w2_rn, s_w2_rev = sdf['W2 RN'].sum(), sdf['W2 Revenue'].sum()
+                s_w1_adr = safe_adr(s_w1_rev, s_w1_rn)
+                s_w2_adr = safe_adr(s_w2_rev, s_w2_rn)
+                
+                stars_data.append({
+                    "star": int(star),
+                    "w1_rn": int(s_w1_rn), "w1_rev": float(s_w1_rev), "w1_adr": float(s_w1_adr),
+                    "w2_rn": int(s_w2_rn), "w2_rev": float(s_w2_rev), "w2_adr": float(s_w2_adr),
+                    "wow_rn": safe_wow(s_w2_rn, s_w1_rn),
+                    "wow_rev": safe_wow(s_w2_rev, s_w1_rev),
+                    "wow_adr": safe_wow(s_w2_adr, s_w1_adr)
+                })
+                
+            city_star_overview.append({
+                "city": str(city),
+                "w1_rn": int(c_w1_rn), "w1_rev": float(c_w1_rev), "w1_adr": float(c_w1_adr),
+                "w2_rn": int(c_w2_rn), "w2_rev": float(c_w2_rev), "w2_adr": float(c_w2_adr),
+                "wow_rn": safe_wow(c_w2_rn, c_w1_rn),
+                "wow_rev": safe_wow(c_w2_rev, c_w1_rev),
+                "wow_adr": safe_wow(c_w2_adr, c_w1_adr),
+                "stars": stars_data
+            })
+
+        # ----------------------------------------------------
+        # 計算 3: 各國籍 (Site)
+        # ----------------------------------------------------
+        city_site_overview = {}
+        for city in cities:
+            cdf = df[df['City'] == city]
+            site_gb = cdf.groupby('Nationality').agg({
+                'W1 RN':'sum', 'W1 Revenue':'sum',
+                'W2 RN':'sum', 'W2 Revenue':'sum'
+            }).reset_index()
+            
+            sites_list = []
+            for _, row in site_gb.iterrows():
+                sw1_rn, sw1_rev = row['W1 RN'], row['W1 Revenue']
+                sw2_rn, sw2_rev = row['W2 RN'], row['W2 Revenue']
+                sw1_adr = safe_adr(sw1_rev, sw1_rn)
+                sw2_adr = safe_adr(sw2_rev, sw2_rn)
+                
+                sites_list.append({
+                    "site": str(row['Nationality']),
+                    "w1_rn": int(sw1_rn), "w1_rev": float(sw1_rev), "w1_adr": float(sw1_adr),
+                    "w2_rn": int(sw2_rn), "w2_rev": float(sw2_rev), "w2_adr": float(sw2_adr),
+                    "wow_rn": safe_wow(sw2_rn, sw1_rn),
+                    "wow_rev": safe_wow(sw2_rev, sw1_rev),
+                    "wow_adr": safe_wow(sw2_adr, sw1_adr)
+                })
+                
+            city_site_overview[str(city)] = {
+                "sites": sites_list,
+                "total_w1_rn": int(cdf['W1 RN'].sum()),
+                "total_w2_rn": int(cdf['W2 RN'].sum())
+            }
+
+        # ----------------------------------------------------
+        # 計算 4: EZ Share
+        # ----------------------------------------------------
+        ez_share = []
+        for mm in df['MM Name'].dropna().unique():
+            mdf = df[df['MM Name'] == mm]
+            t_w1 = int(mdf['W1 RN'].sum())
+            t_w2 = int(mdf['W2 RN'].sum())
+            
+            maintenance = []
+            types = ['HPP', 'HTL', 'SHT']
+            for t in types:
+                tdf = mdf[mdf['Hotel Property Type'] == t]
+                w1_rn = int(tdf['W1 RN'].sum())
+                w2_rn = int(tdf['W2 RN'].sum())
+                
+                w1_pct = float(w1_rn / t_w1) if t_w1 > 0 else 0.0
+                y2_pct = float(w2_rn / t_w2) if t_w2 > 0 else 0.0
+                
+                maintenance.append({
+                    "type": t,
+                    "w1_rn": w1_rn, "w2_rn": w2_rn,
+                    "wow": int(w2_rn - w1_rn),
+                    "w1_pct": w1_pct, "w2_pct": y2_pct,
+                    "wow_pct": float(y2_pct - w1_pct)
+                })
+                
+            ez_share.append({
+                "mm": str(mm),
+                "total_w1": t_w1, "total_w2": t_w2,
+                "wow_total": int(t_w2 - t_w1),
+                "maintenance": maintenance
+            })
+
+        # ----------------------------------------------------
+        # 打包成最終 JSON
+        # ----------------------------------------------------
+        final_data = {
+            "report_date": report_date,
+            "week1_label": w1_label,
+            "week2_label": w2_label,
+            "mm_overview": mm_overview,
+            "city_star_overview": city_star_overview,
+            "city_site_overview": city_site_overview,
+            "ez_share": ez_share
+        }
         
-        parsed_data["report_date"] = report_date
-        parsed_data["week1_label"] = w1_label
-        parsed_data["week2_label"] = w2_label
-        
-        final_json_str = json.dumps(parsed_data, ensure_ascii=False)
+        # 注入並產生 HTML
+        final_json_str = json.dumps(final_data, ensure_ascii=False)
         output_html = HTML_TEMPLATE.replace("__DATA_PLACEHOLDER__", final_json_str)
         
-        st.success("🎉 數據解析並注入成功！")
+        st.success("🎉 CSV 數據加總並計算完成！")
         
         st.download_button(
             label="📥 點此下載更新後的每週報告網頁 (weekly progress.index.html)",
@@ -402,4 +550,4 @@ if uploaded_file is not None:
             mime="text/html"
         )
     except Exception as e:
-        st.error(f"檔案解析失敗，請確認上傳的內容格式是否正確。錯誤訊息: {e}")
+        st.error(f"CSV 檔案結構不合或解析失敗。錯誤訊息: {e}")
