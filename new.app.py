@@ -2,11 +2,12 @@ import streamlit as st
 import pandas as pd
 import json
 import re
+from datetime import datetime
 
 st.set_page_config(page_title="OTA 週報數據更新器", layout="centered")
 
-st.title("📊 OTA 週報網頁數據更新器 (CSV 自動計算版)")
-st.write("請在下方上傳每週拉出來的數據 CSV 檔，系統會自動完成所有複雜的數據加總與 WoW 計算，並注入你的網頁模板中。")
+st.title("📊 OTA 週報網頁數據更新器 (訂單明細自動拆分版)")
+st.write("請在下方輸入你想統計的 Week 1 與 Week 2 日期範圍，系統會自動拆分訂單並計算所有 WoW 與 EZ Share。")
 
 # 這裡是你精美的 HTML 原始碼模板
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -359,195 +360,162 @@ document.getElementById('ez-grid').innerHTML=eH;
 </body>
 </html>"""
 
-# 預算安全除法
 def safe_wow(w2, w1):
-    if w1 == 0 or pd.isna(w1):
-        return 0.0
+    if w1 == 0 or pd.isna(w1): return 0.0
     return float((w2 - w1) / w1)
 
 def safe_adr(rev, rn):
-    if rn == 0 or pd.isna(rn):
-        return 0.0
+    if rn == 0 or pd.isna(rn): return 0.0
     return float(rev / rn)
 
-st.subheader("1. 填寫本週日期標籤")
-col1, col2, col3 = st.columns(3)
+st.subheader("1. 設定統計日期範圍")
+col1, col2 = st.columns(2)
 with col1:
-    report_date = st.text_input("報表基準日 (report_date)", value="2026-06-29")
+    w1_start = st.date_input("Week 1 開始日", value=datetime(2026, 6, 12))
+    w1_end = st.date_input("Week 1 結束日", value=datetime(2026, 6, 18))
 with col2:
-    w1_label = st.text_input("前一週區間 (week1_label)", value="6/12-6/18")
-with col3:
-    w2_label = st.text_input("本週區間 (week2_label)", value="6/19-6/25")
+    w2_start = st.date_input("Week 2 開始日", value=datetime(2026, 6, 19))
+    w2_end = st.date_input("Week 2 結束日", value=datetime(2026, 6, 25))
 
-st.subheader("2. 上傳內部數據 CSV 原始檔")
-uploaded_file = st.file_uploader("請上傳 OverseaDataMarket 原始 CSV 檔案", type=["csv"])
+report_date = st.text_input("報表基準日 (report_date)", value="2026-06-29")
+
+w1_label = f"{w1_start.month}/{w1_start.day}-{w1_end.month}/{w1_end.day}"
+w2_label = f"{w2_start.month}/{w2_start.day}-{w2_end.month}/{w2_end.day}"
+
+st.subheader("2. 上傳明細 CSV 原始檔")
+uploaded_file = st.file_uploader("請上傳 OverseaDataMarket 原始明細 CSV 檔", type=["csv"])
 
 if uploaded_file is not None:
     try:
-        # 讀取 CSV
         df = pd.read_csv(uploaded_file)
         
-        # 欄位型態處理
-        num_cols = ['W1 RN', 'W1 Revenue', 'W1 ADR', 'W2 RN', 'W2 Revenue', 'W2 ADR']
-        for col in num_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+        # 欄位型態與日期清理
+        df['Book Time'] = pd.to_datetime(df['Book Time'], errors='coerce')
+        df['RN'] = pd.to_numeric(df['RN'], errors='coerce').fillna(0)
+        df['ordamount_afterdiscount'] = pd.to_numeric(df['ordamount_afterdiscount'], errors='coerce').fillna(0)
+        df['Star'] = pd.to_numeric(df['Star'], errors='coerce').fillna(0).astype(int)
+        
+        # 定義日期過濾條件
+        w1_mask = (df['Book Time'].dt.date >= w1_start) & (df['Book Time'].dt.date <= w1_end)
+        w2_mask = (df['Book Time'].dt.date >= w2_start) & (df['Book Time'].dt.date <= w2_end)
+        
+        # 建立 W1 與 W2 的獨立欄位以便分組統計
+        df['W1_RN'] = 0; df['W1_Rev'] = 0.0; df['W2_RN'] = 0; df['W2_Rev'] = 0.0
+        df.loc[w1_mask, 'W1_RN'] = df.loc[w1_mask, 'RN']
+        df.loc[w1_mask, 'W1_Rev'] = df.loc[w1_mask, 'ordamount_afterdiscount']
+        df.loc[w2_mask, 'W2_RN'] = df.loc[w2_mask, 'RN']
+        df.loc[w2_mask, 'W2_Rev'] = df.loc[w2_mask, 'ordamount_afterdiscount']
 
         # ----------------------------------------------------
-        # 計算 1: MM 概況
+        # 1. MM 概況
         # ----------------------------------------------------
-        mm_gb = df.groupby('MM Name').agg({
-            'W1 RN':'sum', 'W1 Revenue':'sum',
-            'W2 RN':'sum', 'W2 Revenue':'sum'
-        }).reset_index()
-        
+        mm_gb = df.groupby('MM').agg({'W1_RN':'sum', 'W1_Rev':'sum', 'W2_RN':'sum', 'W2_Rev':'sum'}).reset_index()
         mm_overview = []
         for _, row in mm_gb.iterrows():
-            w1_rn, w1_rev = row['W1 RN'], row['W1 Revenue']
-            w2_rn, w2_rev = row['W2 RN'], row['W2 Revenue']
-            w1_adr = safe_adr(w1_rev, w1_rn)
-            w2_adr = safe_adr(w2_rev, w2_rn)
-            
+            if row['W1_RN'] == 0 and row['W2_RN'] == 0: continue
+            w1_adr = safe_adr(row['W1_Rev'], row['W1_RN'])
+            w2_adr = safe_adr(row['W2_Rev'], row['W2_RN'])
             mm_overview.append({
-                "name": str(row['MM Name']),
-                "w1_rn": int(w1_rn), "w1_rev": float(w1_rev), "w1_adr": float(w1_adr),
-                "w2_rn": int(w2_rn), "w2_rev": float(w2_rev), "w2_adr": float(w2_adr),
-                "wow_rn": safe_wow(w2_rn, w1_rn),
-                "wow_rev": safe_wow(w2_rev, w1_rev),
+                "name": str(row['MM']),
+                "w1_rn": int(row['W1_RN']), "w1_rev": float(row['W1_Rev']), "w1_adr": float(w1_adr),
+                "w2_rn": int(row['W2_RN']), "w2_rev": float(row['W2_Rev']), "w2_adr": float(w2_adr),
+                "wow_rn": safe_wow(row['W2_RN'], row['W1_RN']),
+                "wow_rev": safe_wow(row['W2_Rev'], row['W1_Rev']),
                 "wow_adr": safe_wow(w2_adr, w1_adr)
             })
-            
+
         # ----------------------------------------------------
-        # 計算 2: 城市 & 星級
+        # 2. 城市 & 星級概況
         # ----------------------------------------------------
         city_star_overview = []
         cities = df['City'].dropna().unique()
         for city in cities:
             cdf = df[df['City'] == city]
-            c_w1_rn, c_w1_rev = cdf['W1 RN'].sum(), cdf['W1 Revenue'].sum()
-            c_w2_rn, c_w2_rev = cdf['W2 RN'].sum(), cdf['W2 Revenue'].sum()
-            c_w1_adr = safe_adr(c_w1_rev, c_w1_rn)
-            c_w2_adr = safe_adr(c_w2_rev, c_w2_rn)
+            c_w1_rn, c_w1_rev = cdf['W1_RN'].sum(), cdf['W1_Rev'].sum()
+            c_w2_rn, c_w2_rev = cdf['W2_RN'].sum(), cdf['W2_Rev'].sum()
+            if c_w1_rn == 0 and c_w2_rn == 0: continue
             
             stars_data = []
-            stars = sorted(cdf['Star'].dropna().unique())
-            for star in stars:
+            for star in sorted(cdf['Star'].unique()):
+                if star == 0: continue
                 sdf = cdf[cdf['Star'] == star]
-                s_w1_rn, s_w1_rev = sdf['W1 RN'].sum(), sdf['W1 Revenue'].sum()
-                s_w2_rn, s_w2_rev = sdf['W2 RN'].sum(), sdf['W2 Revenue'].sum()
-                s_w1_adr = safe_adr(s_w1_rev, s_w1_rn)
-                s_w2_adr = safe_adr(s_w2_rev, s_w2_rn)
-                
+                s_w1_rn, s_w1_rev = sdf['W1_RN'].sum(), sdf['W1_Rev'].sum()
+                s_w2_rn, s_w2_rev = sdf['W2_RN'].sum(), sdf['W2_Rev'].sum()
+                if s_w1_rn == 0 and s_w2_rn == 0: continue
                 stars_data.append({
                     "star": int(star),
-                    "w1_rn": int(s_w1_rn), "w1_rev": float(s_w1_rev), "w1_adr": float(s_w1_adr),
-                    "w2_rn": int(s_w2_rn), "w2_rev": float(s_w2_rev), "w2_adr": float(s_w2_adr),
-                    "wow_rn": safe_wow(s_w2_rn, s_w1_rn),
-                    "wow_rev": safe_wow(s_w2_rev, s_w1_rev),
-                    "wow_adr": safe_wow(s_w2_adr, s_w1_adr)
+                    "w1_rn": int(s_w1_rn), "w1_rev": float(s_w1_rev), "w1_adr": float(safe_adr(s_w1_rev, s_w1_rn)),
+                    "w2_rn": int(s_w2_rn), "w2_rev": float(s_w2_rev), "w2_adr": float(safe_adr(s_w2_rev, s_w2_rn)),
+                    "wow_rn": safe_wow(s_w2_rn, s_w1_rn), "wow_rev": safe_wow(s_w2_rev, s_w1_rev), "wow_adr": safe_wow(safe_adr(s_w2_rev, s_w2_rn), safe_adr(s_w1_rev, s_w1_rn))
                 })
                 
             city_star_overview.append({
                 "city": str(city),
-                "w1_rn": int(c_w1_rn), "w1_rev": float(c_w1_rev), "w1_adr": float(c_w1_adr),
-                "w2_rn": int(c_w2_rn), "w2_rev": float(c_w2_rev), "w2_adr": float(c_w2_adr),
-                "wow_rn": safe_wow(c_w2_rn, c_w1_rn),
-                "wow_rev": safe_wow(c_w2_rev, c_w1_rev),
-                "wow_adr": safe_wow(c_w2_adr, c_w1_adr),
+                "w1_rn": int(c_w1_rn), "w1_rev": float(c_w1_rev), "w1_adr": float(safe_adr(c_w1_rev, c_w1_rn)),
+                "w2_rn": int(c_w2_rn), "w2_rev": float(c_w2_rev), "w2_adr": float(safe_adr(c_w2_rev, c_w2_rn)),
+                "wow_rn": safe_wow(c_w2_rn, c_w1_rn), "wow_rev": safe_wow(c_w2_rev, c_w1_rev), "wow_adr": safe_wow(safe_adr(c_w2_rev, c_w2_rn), safe_adr(c_w1_rev, c_w1_rn)),
                 "stars": stars_data
             })
 
         # ----------------------------------------------------
-        # 計算 3: 各國籍 (Site)
+        # 3. 各國籍概況 (Site)
         # ----------------------------------------------------
         city_site_overview = {}
         for city in cities:
             cdf = df[df['City'] == city]
-            site_gb = cdf.groupby('Nationality').agg({
-                'W1 RN':'sum', 'W1 Revenue':'sum',
-                'W2 RN':'sum', 'W2 Revenue':'sum'
-            }).reset_index()
+            if cdf['W1_RN'].sum() == 0 and cdf['W2_RN'].sum() == 0: continue
+            site_gb = cdf.groupby('Ctrip/Trip site').agg({'W1_RN':'sum', 'W1_Rev':'sum', 'W2_RN':'sum', 'W2_Rev':'sum'}).reset_index()
             
             sites_list = []
             for _, row in site_gb.iterrows():
-                sw1_rn, sw1_rev = row['W1 RN'], row['W1 Revenue']
-                sw2_rn, sw2_rev = row['W2 RN'], row['W2 Revenue']
-                sw1_adr = safe_adr(sw1_rev, sw1_rn)
-                sw2_adr = safe_adr(sw2_rev, sw2_rn)
-                
+                if row['W1_RN'] == 0 and row['W2_RN'] == 0: continue
                 sites_list.append({
-                    "site": str(row['Nationality']),
-                    "w1_rn": int(sw1_rn), "w1_rev": float(sw1_rev), "w1_adr": float(sw1_adr),
-                    "w2_rn": int(sw2_rn), "w2_rev": float(sw2_rev), "w2_adr": float(sw2_adr),
-                    "wow_rn": safe_wow(sw2_rn, sw1_rn),
-                    "wow_rev": safe_wow(sw2_rev, sw1_rev),
-                    "wow_adr": safe_wow(sw2_adr, sw1_adr)
+                    "site": str(row['Ctrip/Trip site']),
+                    "w1_rn": int(row['W1_RN']), "w1_rev": float(row['W1_Rev']), "w1_adr": float(safe_adr(row['W1_Rev'], row['W1_RN'])),
+                    "w2_rn": int(row['W2_RN']), "w2_rev": float(row['W2_Rev']), "w2_adr": float(safe_adr(row['W2_Rev'], row['W2_RN'])),
+                    "wow_rn": safe_wow(row['W2_RN'], row['W1_RN']), "wow_rev": safe_wow(row['W2_Rev'], row['W1_Rev']), "wow_adr": safe_wow(safe_adr(row['W2_Rev'], row['W2_RN']), safe_adr(row['W1_Rev'], row['W1_RN']))
                 })
-                
             city_site_overview[str(city)] = {
                 "sites": sites_list,
-                "total_w1_rn": int(cdf['W1 RN'].sum()),
-                "total_w2_rn": int(cdf['W2 RN'].sum())
+                "total_w1_rn": int(cdf['W1_RN'].sum()),
+                "total_w2_rn": int(cdf['W2_RN'].sum())
             }
 
         # ----------------------------------------------------
-        # 計算 4: EZ Share
+        # 4. EZ Share
         # ----------------------------------------------------
         ez_share = []
-        for mm in df['MM Name'].dropna().unique():
-            mdf = df[df['MM Name'] == mm]
-            t_w1 = int(mdf['W1 RN'].sum())
-            t_w2 = int(mdf['W2 RN'].sum())
+        for mm in df['MM'].dropna().unique():
+            mdf = df[df['MM'] == mm]
+            t_w1, t_w2 = int(mdf['W1_RN'].sum()), int(mdf['W2_RN'].sum())
+            if t_w1 == 0 and t_w2 == 0: continue
             
             maintenance = []
-            types = ['HPP', 'HTL', 'SHT']
-            for t in types:
-                tdf = mdf[mdf['Hotel Property Type'] == t]
-                w1_rn = int(tdf['W1 RN'].sum())
-                w2_rn = int(tdf['W2 RN'].sum())
-                
+            for t in ['HPP', 'HTL', 'SHT']:
+                tdf = mdf[mdf['Chain Type'] == t]  # 明細對應欄位為 Chain Type
+                w1_rn, w2_rn = int(tdf['W1_RN'].sum()), int(tdf['W2_RN'].sum())
                 w1_pct = float(w1_rn / t_w1) if t_w1 > 0 else 0.0
-                y2_pct = float(w2_rn / t_w2) if t_w2 > 0 else 0.0
-                
+                w2_pct = float(w2_rn / t_w2) if t_w2 > 0 else 0.0
                 maintenance.append({
-                    "type": t,
-                    "w1_rn": w1_rn, "w2_rn": w2_rn,
-                    "wow": int(w2_rn - w1_rn),
-                    "w1_pct": w1_pct, "w2_pct": y2_pct,
-                    "wow_pct": float(y2_pct - w1_pct)
+                    "type": t, "w1_rn": w1_rn, "w2_rn": w2_rn, "wow": int(w2_rn - w1_rn),
+                    "w1_pct": w1_pct, "w2_pct": w2_pct, "wow_pct": float(w2_pct - w1_pct)
                 })
-                
             ez_share.append({
-                "mm": str(mm),
-                "total_w1": t_w1, "total_w2": t_w2,
-                "wow_total": int(t_w2 - t_w1),
-                "maintenance": maintenance
+                "mm": str(mm), "total_w1": t_w1, "total_w2": t_w2, "wow_total": int(t_w2 - t_w1), "maintenance": maintenance
             })
 
-        # ----------------------------------------------------
-        # 打包成最終 JSON
-        # ----------------------------------------------------
+        # 打包注入
         final_data = {
-            "report_date": report_date,
-            "week1_label": w1_label,
-            "week2_label": w2_label,
-            "mm_overview": mm_overview,
-            "city_star_overview": city_star_overview,
-            "city_site_overview": city_site_overview,
-            "ez_share": ez_share
+            "report_date": report_date, "week1_label": w1_label, "week2_label": w2_label,
+            "mm_overview": mm_overview, "city_star_overview": city_star_overview,
+            "city_site_overview": city_site_overview, "ez_share": ez_share
         }
         
-        # 注入並產生 HTML
-        final_json_str = json.dumps(final_data, ensure_ascii=False)
-        output_html = HTML_TEMPLATE.replace("__DATA_PLACEHOLDER__", final_json_str)
-        
-        st.success("🎉 CSV 數據加總並計算完成！")
-        
+        output_html = HTML_TEMPLATE.replace("__DATA_PLACEHOLDER__", json.dumps(final_data, ensure_ascii=False))
+        st.success("🎉 訂單明細時間拆分、WoW加總計算全部完成！")
         st.download_button(
-            label="📥 點此下載更新後的每週報告網頁 (weekly progress.index.html)",
-            data=output_html,
-            file_name="weekly progress.index.html",
-            mime="text/html"
+            label="📥 一鍵下載更新後的每週報告網頁 (weekly progress.index.html)",
+            data=output_html, file_name="weekly progress.index.html", mime="text/html"
         )
     except Exception as e:
-        st.error(f"CSV 檔案結構不合或解析失敗。錯誤訊息: {e}")
+        st.error(f"發生計算錯誤，請確認 CSV 檔案是否完整。錯誤訊息: {e}")
