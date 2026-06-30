@@ -6,8 +6,8 @@ from datetime import datetime
 
 st.set_page_config(page_title="OTA 週報數據更新器", layout="centered")
 
-st.title("📊 OTA 週報網頁數據更新器 (訂單明細自動拆分版)")
-st.write("請在下方輸入你想統計的 Week 1 與 Week 2 日期範圍，系統會自動拆分訂單並計算所有 WoW 與 EZ Share。")
+st.title("📊 OTA 週報網頁數據更新器 (GMV 版)")
+st.write("請在下方設定統計範圍，系統會自動以 `gmv` 作為營收基準進行加總與 ADR 計算。")
 
 # 這裡是你精美的 HTML 原始碼模板
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -392,7 +392,7 @@ if uploaded_file is not None:
         # 欄位型態與日期清理
         df['Book Time'] = pd.to_datetime(df['Book Time'], errors='coerce')
         df['RN'] = pd.to_numeric(df['RN'], errors='coerce').fillna(0)
-        df['ordamount_afterdiscount'] = pd.to_numeric(df['ordamount_afterdiscount'], errors='coerce').fillna(0)
+        df['gmv'] = pd.to_numeric(df['gmv'], errors='coerce').fillna(0)
         df['Star'] = pd.to_numeric(df['Star'], errors='coerce').fillna(0).astype(int)
         
         # 定義日期過濾條件
@@ -402,9 +402,9 @@ if uploaded_file is not None:
         # 建立 W1 與 W2 的獨立欄位以便分組統計
         df['W1_RN'] = 0; df['W1_Rev'] = 0.0; df['W2_RN'] = 0; df['W2_Rev'] = 0.0
         df.loc[w1_mask, 'W1_RN'] = df.loc[w1_mask, 'RN']
-        df.loc[w1_mask, 'W1_Rev'] = df.loc[w1_mask, 'ordamount_afterdiscount']
+        df.loc[w1_mask, 'W1_Rev'] = df.loc[w1_mask, 'gmv']
         df.loc[w2_mask, 'W2_RN'] = df.loc[w2_mask, 'RN']
-        df.loc[w2_mask, 'W2_Rev'] = df.loc[w2_mask, 'ordamount_afterdiscount']
+        df.loc[w2_mask, 'W2_Rev'] = df.loc[w2_mask, 'gmv']
 
         # ----------------------------------------------------
         # 1. MM 概況
@@ -492,7 +492,7 @@ if uploaded_file is not None:
             
             maintenance = []
             for t in ['HPP', 'HTL', 'SHT']:
-                tdf = mdf[mdf['Chain Type'] == t]  # 明細對應欄位為 Chain Type
+                tdf = mdf[mdf['Chain Type'] == t]
                 w1_rn, w2_rn = int(tdf['W1_RN'].sum()), int(tdf['W2_RN'].sum())
                 w1_pct = float(w1_rn / t_w1) if t_w1 > 0 else 0.0
                 w2_pct = float(w2_rn / t_w2) if t_w2 > 0 else 0.0
@@ -512,7 +512,7 @@ if uploaded_file is not None:
         }
         
         output_html = HTML_TEMPLATE.replace("__DATA_PLACEHOLDER__", json.dumps(final_data, ensure_ascii=False))
-        st.success("🎉 訂單明細時間拆分、WoW加總計算全部完成！")
+        st.success("🎉 以 GMV 欄位為基準的週報計算已全數完成！")
         st.download_button(
             label="📥 一鍵下載更新後的每週報告網頁 (weekly progress.index.html)",
             data=output_html, file_name="weekly progress.index.html", mime="text/html"
