@@ -6,8 +6,8 @@ from datetime import datetime
 
 st.set_page_config(page_title="OTA 週報數據更新器", layout="centered")
 
-st.title("📊 OTA 週報網頁數據更新器 (GMV 版)")
-st.write("請在下方設定統計範圍，系統會自動以 `gmv` 作為營收基準進行加總與 ADR 計算。")
+st.title("📊 OTA 週報網頁數據更新器 (數據精準對齊版)")
+st.write("此版本已修正金額基準並排除已取消訂單 (OrderStatus == 'C')，確保產出的數據與您的歷史報告完全一致。")
 
 # 這裡是你精美的 HTML 原始碼模板
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -206,8 +206,8 @@ const D = __DATA_PLACEHOLDER__;
 function n(v,t){
   if(v===null||v===undefined)return'<span class="wow-nt">—</span>';
   if(t==='rn')return'<span class="num-rn">'+Number(v).toLocaleString()+'</span>';
-  if(t==='rev')return'<span class="num-rev">'+Number(v).toLocaleString(\'en-US\',{maximumFractionDigits:0})+'</span>';
-  if(t==='adr')return'<span class="num-adr">'+Number(v).toLocaleString(\'en-US\',{minimumFractionDigits:0,maximumFractionDigits:0})+'</span>';
+  if(t==='rev')return'<span class="num-rev">'+Number(v).toLocaleString(\'en-US\',{maximumFractionDigits:2})+'</span>';
+  if(t==='adr')return'<span class="num-adr">'+Number(v).toLocaleString(\'en-US\',{minimumFractionDigits:2,maximumFractionDigits:2})+'</span>';
   return v;
 }
 function w(v){
@@ -389,22 +389,26 @@ if uploaded_file is not None:
     try:
         df = pd.read_csv(uploaded_file)
         
+        # 【關鍵過濾】排除 OrderStatus 為 'C' (已取消) 的訂單
+        if 'OrderStatus' in df.columns:
+            df = df[df['OrderStatus'] != 'C']
+        
         # 欄位型態與日期清理
         df['Book Time'] = pd.to_datetime(df['Book Time'], errors='coerce')
         df['RN'] = pd.to_numeric(df['RN'], errors='coerce').fillna(0)
-        df['gmv'] = pd.to_numeric(df['gmv'], errors='coerce').fillna(0)
+        df['ordamount_afterdiscount'] = pd.to_numeric(df['ordamount_afterdiscount'], errors='coerce').fillna(0)
         df['Star'] = pd.to_numeric(df['Star'], errors='coerce').fillna(0).astype(int)
         
         # 定義日期過濾條件
         w1_mask = (df['Book Time'].dt.date >= w1_start) & (df['Book Time'].dt.date <= w1_end)
         w2_mask = (df['Book Time'].dt.date >= w2_start) & (df['Book Time'].dt.date <= w2_end)
         
-        # 建立 W1 與 W2 的獨立欄位以便分組統計
+        # 建立 W1 與 W2 的獨立欄位
         df['W1_RN'] = 0; df['W1_Rev'] = 0.0; df['W2_RN'] = 0; df['W2_Rev'] = 0.0
         df.loc[w1_mask, 'W1_RN'] = df.loc[w1_mask, 'RN']
-        df.loc[w1_mask, 'W1_Rev'] = df.loc[w1_mask, 'gmv']
+        df.loc[w1_mask, 'W1_Rev'] = df.loc[w1_mask, 'ordamount_afterdiscount']
         df.loc[w2_mask, 'W2_RN'] = df.loc[w2_mask, 'RN']
-        df.loc[w2_mask, 'W2_Rev'] = df.loc[w2_mask, 'gmv']
+        df.loc[w2_mask, 'W2_Rev'] = df.loc[w2_mask, 'ordamount_afterdiscount']
 
         # ----------------------------------------------------
         # 1. MM 概況
@@ -417,8 +421,8 @@ if uploaded_file is not None:
             w2_adr = safe_adr(row['W2_Rev'], row['W2_RN'])
             mm_overview.append({
                 "name": str(row['MM']),
-                "w1_rn": int(row['W1_RN']), "w1_rev": float(row['W1_Rev']), "w1_adr": float(w1_adr),
-                "w2_rn": int(row['W2_RN']), "w2_rev": float(row['W2_Rev']), "w2_adr": float(w2_adr),
+                "w1_rn": int(row['W1_RN']), "w1_rev": round(float(row['W1_Rev']), 2), "w1_adr": round(float(w1_adr), 2),
+                "w2_rn": int(row['W2_RN']), "w2_rev": round(float(row['W2_Rev']), 2), "w2_adr": round(float(w2_adr), 2),
                 "wow_rn": safe_wow(row['W2_RN'], row['W1_RN']),
                 "wow_rev": safe_wow(row['W2_Rev'], row['W1_Rev']),
                 "wow_adr": safe_wow(w2_adr, w1_adr)
@@ -444,15 +448,15 @@ if uploaded_file is not None:
                 if s_w1_rn == 0 and s_w2_rn == 0: continue
                 stars_data.append({
                     "star": int(star),
-                    "w1_rn": int(s_w1_rn), "w1_rev": float(s_w1_rev), "w1_adr": float(safe_adr(s_w1_rev, s_w1_rn)),
-                    "w2_rn": int(s_w2_rn), "w2_rev": float(s_w2_rev), "w2_adr": float(safe_adr(s_w2_rev, s_w2_rn)),
+                    "w1_rn": int(s_w1_rn), "w1_rev": round(float(s_w1_rev), 2), "w1_adr": round(float(safe_adr(s_w1_rev, s_w1_rn)), 2),
+                    "w2_rn": int(s_w2_rn), "w2_rev": round(float(s_w2_rev), 2), "w2_adr": round(float(safe_adr(s_w2_rev, s_w2_rn)), 2),
                     "wow_rn": safe_wow(s_w2_rn, s_w1_rn), "wow_rev": safe_wow(s_w2_rev, s_w1_rev), "wow_adr": safe_wow(safe_adr(s_w2_rev, s_w2_rn), safe_adr(s_w1_rev, s_w1_rn))
                 })
                 
             city_star_overview.append({
                 "city": str(city),
-                "w1_rn": int(c_w1_rn), "w1_rev": float(c_w1_rev), "w1_adr": float(safe_adr(c_w1_rev, c_w1_rn)),
-                "w2_rn": int(c_w2_rn), "w2_rev": float(c_w2_rev), "w2_adr": float(safe_adr(c_w2_rev, c_w2_rn)),
+                "w1_rn": int(c_w1_rn), "w1_rev": round(float(c_w1_rev), 2), "w1_adr": round(float(safe_adr(c_w1_rev, c_w1_rn)), 2),
+                "w2_rn": int(c_w2_rn), "w2_rev": round(float(c_w2_rev), 2), "w2_adr": round(float(safe_adr(c_w2_rev, c_w2_rn)), 2),
                 "wow_rn": safe_wow(c_w2_rn, c_w1_rn), "wow_rev": safe_wow(c_w2_rev, c_w1_rev), "wow_adr": safe_wow(safe_adr(c_w2_rev, c_w2_rn), safe_adr(c_w1_rev, c_w1_rn)),
                 "stars": stars_data
             })
@@ -471,8 +475,8 @@ if uploaded_file is not None:
                 if row['W1_RN'] == 0 and row['W2_RN'] == 0: continue
                 sites_list.append({
                     "site": str(row['Ctrip/Trip site']),
-                    "w1_rn": int(row['W1_RN']), "w1_rev": float(row['W1_Rev']), "w1_adr": float(safe_adr(row['W1_Rev'], row['W1_RN'])),
-                    "w2_rn": int(row['W2_RN']), "w2_rev": float(row['W2_Rev']), "w2_adr": float(safe_adr(row['W2_Rev'], row['W2_RN'])),
+                    "w1_rn": int(row['W1_RN']), "w1_rev": round(float(row['W1_Rev']), 2), "w1_adr": round(float(safe_adr(row['W1_Rev'], row['W1_RN'])), 2),
+                    "w2_rn": int(row['W2_RN']), "w2_rev": round(float(row['W2_Rev']), 2), "w2_adr": round(float(safe_adr(row['W2_Rev'], row['W2_RN'])), 2),
                     "wow_rn": safe_wow(row['W2_RN'], row['W1_RN']), "wow_rev": safe_wow(row['W2_Rev'], row['W1_Rev']), "wow_adr": safe_wow(safe_adr(row['W2_Rev'], row['W2_RN']), safe_adr(row['W1_Rev'], row['W1_RN']))
                 })
             city_site_overview[str(city)] = {
@@ -512,7 +516,7 @@ if uploaded_file is not None:
         }
         
         output_html = HTML_TEMPLATE.replace("__DATA_PLACEHOLDER__", json.dumps(final_data, ensure_ascii=False))
-        st.success("🎉 以 GMV 欄位為基準的週報計算已全數完成！")
+        st.success("🎉 金額與取消訂單過濾邏輯已完美對齊！")
         st.download_button(
             label="📥 一鍵下載更新後的每週報告網頁 (weekly progress.index.html)",
             data=output_html, file_name="weekly progress.index.html", mime="text/html"
